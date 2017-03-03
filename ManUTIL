@@ -1,0 +1,2292 @@
+package ggs.erm.payrollJava;
+
+import java.io.FileOutputStream;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.sql.Timestamp;
+import java.text.DateFormat;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Calendar;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Locale;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import ggs.erm.beans.application.Application;
+import ggs.erm.beans.application.ErmUtil;
+import ggs.erm.beans.connection.ConnectionException;
+import ggs.erm.beans.connection.ConnectionPool;
+import ggs.erm.beans.error.ErrorHandler;
+import ggs.erm.beans.error.ErrorHandlerException;
+import ggs.erm.beans.payroll.PayHeadBean;
+import ggs.erm.beans.session.Session;
+import ggs.erm.beans.session.SessionException;
+import ggs.erm.beans.setup.login.LoginInfo;
+import ggs.erm.utility.DBUtility;
+import ggs.erm.utility.DateUtility;
+
+import javax.naming.NamingException;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+import org.apache.poi.hssf.usermodel.HSSFDataFormat;
+import org.apache.poi.hssf.usermodel.HSSFSheet;
+import org.apache.poi.hssf.usermodel.HSSFWorkbook;
+import org.apache.poi.ss.usermodel.Cell;
+import org.apache.poi.ss.usermodel.CellStyle;
+import org.apache.poi.ss.usermodel.DataFormat;
+import org.apache.poi.ss.usermodel.Font;
+import org.apache.poi.ss.usermodel.IndexedColors;
+import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.ss.usermodel.Workbook;
+import org.apache.poi.ss.util.CellRangeAddress;
+import org.apache.poi.ss.util.CellUtil;
+import org.apache.poi.xssf.usermodel.XSSFDataFormat;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.joda.time.DateTime;
+import org.joda.time.Period;
+import org.joda.time.format.PeriodFormatter;
+import org.joda.time.format.PeriodFormatterBuilder;
+import org.omg.PortableInterceptor.INACTIVE;
+import org.openxmlformats.schemas.spreadsheetml.x2006.main.CTCsPageSetup;
+
+import sun.nio.cs.ext.TIS_620;
+
+import com.ibm.compat.d;
+import com.ibm.icu.text.DecimalFormat;
+import com.ibm.ws.batch.xJCL.beans.returnCodeExpression;
+
+public class ManagerialRemunerationUtil implements Runnable,Cloneable{
+
+	private Thread esc;
+	private String status = "Terminated";
+	LoginInfo loginInfo;
+	private int logId;
+	private String path;
+	private String PayrollRunName;
+	private int companyId;
+	private String companyName;
+	private int finYear;
+	private String payrollMonth;
+	private Session session;
+	
+	public ManagerialRemunerationUtil()
+	{}
+	public ManagerialRemunerationUtil(LoginInfo info, String path, int logId, String PayrollRunName,String payrollMonth, int companyId, 
+			int finYear,String companyName,Session session) {
+		loginInfo = info;
+		this.path = path;
+		this.logId = logId;
+		this.PayrollRunName = PayrollRunName;
+		this.companyName = companyName;
+		this.companyId = companyId;
+		this.finYear = finYear;
+		this.session=session;
+		this.payrollMonth = payrollMonth;
+	}
+	
+	
+	
+	
+	public void startThread() {
+		esc = new Thread(this);
+	    esc.start();
+	}
+	    
+	public void stopThread() {
+		try {
+	        esc.interrupt();
+	    } catch(Exception e) {
+	        System.err.println("Error in stopThread");
+	        e.printStackTrace();
+	    }
+	 }
+	    
+	@Override
+	public void run() {
+		status = "Running";
+		int inCatch=0;
+		Workbook w = null;
+		try {
+			try {
+				
+				ArrayList<ManagerialRemunerationInfo> managerialRemunerationInfo = new ArrayList<ManagerialRemunerationInfo>();
+				System.out.println("PayrollRunIn Thread :: "+PayrollRunName);
+				managerialRemunerationInfo = GenerateReportData(session,PayrollRunName,companyId,finYear);
+				w=GenerateExcelReport(managerialRemunerationInfo,finYear,PayrollRunName,companyName);
+				
+			   	FileOutputStream fos = new FileOutputStream(path, true);
+			    	w.write(fos);
+			     updateReportLog(logId, path); 
+			  
+				
+			} catch(NumberFormatException e) {
+				inCatch = 1;
+				e.printStackTrace();
+				ErmUtil.handleException(e);
+				ErrorHandler.log("PayrollReport>>>>>>>>>:" + e);
+			}
+			
+			status = "Terminated";
+		} catch(Exception e) {
+			inCatch = 1;
+         	e.printStackTrace();
+         	ErmUtil.handleException(e);
+         	try {
+				ErrorHandler.log("PayrollReport>>>>>>>>>:" + e);
+			} catch (ErrorHandlerException e1) {
+				e1.printStackTrace();
+			}
+		} catch(Throwable e) {
+			inCatch = 1;
+         	e.printStackTrace();
+         	try {
+				ErrorHandler.log("PayrollReport>>>>>>>>>:" + e);
+			} catch (ErrorHandlerException e1) {
+				e1.printStackTrace();
+			}
+		} finally {
+			try { 
+				if(inCatch == 1) {
+					updateReportLogTerminated(logId, "");
+				}
+         	} catch(Exception sql) {
+				sql.printStackTrace();
+         	}
+		}
+	}
+	
+	
+	private void updateReportLog(int logId, String path) throws Exception {
+		Connection con = null;
+		Statement stmt = null;
+		StringBuffer sqlstmt = new StringBuffer();
+		try {
+			con = ConnectionPool.getConnection();
+			stmt = con.createStatement(); 
+			sqlstmt.append("update PAYROLL_REPORT_LOG set DOWNLOAD_DATE = ");
+			sqlstmt.append(Application.toString(Application.getCurrentTS().toString()));
+			sqlstmt.append(", STATUS = 'Completed'");
+			sqlstmt.append(", PATH = ");
+			sqlstmt.append(Application.toString(path));
+			sqlstmt.append(" where DOWNLOAD_ID = ").append(logId);
+			System.out.println("The sql for update PAYROLL_REPORT_LOG  is---->" + sqlstmt);
+			stmt.execute(sqlstmt.toString());
+		} catch(SQLException sql) {
+			System.err.println("Exception in updating record in payroll_report_log:--->"+sql);
+			throw sql;
+		} finally {
+			sqlstmt = null;
+			if(con != null) {
+				con.close();
+			}
+			if(stmt != null) {
+				stmt.close();
+			}
+		}
+	}
+	
+	private void updateReportLogTerminated(int logId, String path) throws Exception {
+		Connection con = null;
+		Statement stmt = null;
+		StringBuffer sqlstmt = new StringBuffer();
+		try {
+			con = ConnectionPool.getConnection();
+			stmt = con.createStatement(); 
+			sqlstmt.append("update PAYROLL_REPORT_LOG set DOWNLOAD_DATE = ");
+			sqlstmt.append(Application.toString(Application.getCurrentTS().toString()));
+			sqlstmt.append(", STATUS = 'Terminated'");
+			sqlstmt.append(", PATH = ");
+			sqlstmt.append(Application.toString(path)).append(", TOTAL_RECORDS = null, COMPLETED_RECORDS = null");
+			sqlstmt.append(" where DOWNLOAD_ID = ").append(logId);
+			System.out.println("The sql for update PAYROLL_REPORT_LOG  is---->" + sqlstmt);
+			stmt.execute(sqlstmt.toString());
+		} catch(SQLException sql) {
+			System.err.println("Exception in updating record in payroll_report_log:--->" + sql);
+			throw sql;
+		} finally {
+			sqlstmt=null;
+			if(con!=null) {
+				con.close();
+			}
+			if(stmt!=null) { 
+				stmt.close();
+			} 
+		}
+	}
+	
+	
+	
+	private Workbook GenerateExcelReport(ArrayList<ManagerialRemunerationInfo> managerialRemunerationInfoList,int finYear,String PayrollRunName,String companyName)
+	{
+		 int month = getMonthNo(PayrollRunName);
+		 String endDate = getDate(month,Integer.parseInt(payrollMonth.split(" ")[1]));
+		 
+		Workbook workbook = null;
+		Sheet sheet = null;
+		workbook = new XSSFWorkbook();	
+		sheet = workbook.createSheet("Managerial Remuneration Report Summary");
+		
+		sheet.addMergedRegion(new CellRangeAddress(0, 0, 0, 1));
+		
+		//Sheet sheet = workbook.createSheet("Managerial Valuation Report");
+		//Create a new row in current sheet
+		//Row row = sheet.createRow(0);
+		//Create a new cell in current row
+		 CellStyle style = workbook.createCellStyle();
+		 style.setFillForegroundColor(IndexedColors.AQUA.getIndex());
+		 style.setFillPattern(CellStyle.SOLID_FOREGROUND); 
+		 style.setVerticalAlignment(CellStyle.VERTICAL_TOP);
+		 CellStyle styleAlignRight = workbook.createCellStyle();
+		 styleAlignRight.setAlignment(CellStyle.ALIGN_RIGHT);
+		 
+		  style.setWrapText(true);
+		 
+		 CellStyle style_yellow = workbook.createCellStyle();
+		 style_yellow.setFillForegroundColor(IndexedColors.LIGHT_YELLOW.getIndex());
+		 style_yellow.setFillPattern(CellStyle.SOLID_FOREGROUND); 
+		 style_yellow.setVerticalAlignment(CellStyle.VERTICAL_CENTER);
+		 style_yellow.setWrapText(true);
+		 
+		 
+		 CellStyle style_green = workbook.createCellStyle();
+		 style_green.setFillForegroundColor(IndexedColors.LIGHT_GREEN.getIndex());
+		 style_green.setFillPattern(CellStyle.SOLID_FOREGROUND); 
+		 style_green.setVerticalAlignment(CellStyle.VERTICAL_TOP);
+		 style_green.setWrapText(true);
+		 
+		 Font redFont = workbook.createFont();
+		 redFont.setColor(IndexedColors.RED.getIndex());
+		 
+		 Font greenFont = workbook.createFont();
+		 greenFont.setColor(IndexedColors.GREEN.getIndex());
+		 
+		 CellStyle style_number  = workbook.createCellStyle();
+		 DataFormat hssfDataFormat = workbook.createDataFormat(); 
+		 style_number.setDataFormat(hssfDataFormat.getFormat("#,##0.00"));
+		 
+		 
+		 CellStyle style_redtext = workbook.createCellStyle();
+		 style_redtext.setFont(redFont);
+		 CellStyle style_greentext = workbook.createCellStyle();
+		 style_greentext.setFont(greenFont);
+		 
+		 
+		 CellStyle style_grey = workbook.createCellStyle();
+		 style_grey.setFillForegroundColor(IndexedColors.GREY_25_PERCENT.getIndex());
+		 style_grey.setFillPattern(CellStyle.SOLID_FOREGROUND); 
+		 style_grey.setVerticalAlignment(CellStyle.VERTICAL_TOP);
+		 style_grey.setWrapText(true);
+		 
+		 
+		 style.setBorderBottom(CellStyle.BORDER_THIN);
+		 style.setBorderTop(CellStyle.BORDER_THIN);
+		 style.setBorderRight(CellStyle.BORDER_THIN);
+		 style.setBorderLeft(CellStyle.BORDER_THIN);
+		 style_yellow.setBorderBottom(CellStyle.BORDER_THIN);
+		 style_yellow.setBorderTop(CellStyle.BORDER_THIN);
+		 style_yellow.setBorderRight(CellStyle.BORDER_THIN);
+		 style_yellow.setBorderLeft(CellStyle.BORDER_THIN);
+		 style_grey.setBorderBottom(CellStyle.BORDER_THIN);
+		 style_grey.setBorderTop(CellStyle.BORDER_THIN);
+		 style_grey.setBorderRight(CellStyle.BORDER_THIN);
+		 style_grey.setBorderLeft(CellStyle.BORDER_THIN);
+		 
+		 style_green.setBorderBottom(CellStyle.BORDER_THIN);
+		 style_green.setBorderTop(CellStyle.BORDER_THIN);
+		 style_green.setBorderRight(CellStyle.BORDER_THIN);
+		 style_green.setBorderLeft(CellStyle.BORDER_THIN);
+		 
+		 
+		 sheet.setColumnWidth(0, 4000);
+		 sheet.setColumnWidth(1, 5500);
+		 sheet.setColumnWidth(2, 5500);
+		 sheet.setColumnWidth(3, 5500);
+		 sheet.setColumnWidth(4, 5500);
+		 sheet.setColumnWidth(5, 5500);
+		 sheet.setColumnWidth(6, 5500);
+		 sheet.setColumnWidth(7, 5500);
+		 sheet.setColumnWidth(8, 5500);
+		 sheet.setColumnWidth(9, 5500);
+		 sheet.setColumnWidth(10, 5500);
+		 sheet.setColumnWidth(11, 5500);
+		 // style.setFillPattern(CellStyle.SOLID_FOREGROUND);
+		//Set value to new value
+		Row row1 = sheet.createRow(0);
+		Row row2 = sheet.createRow(1);
+		Row row3 = sheet.createRow(2);
+		Row row4 = sheet.createRow(3);
+		Row row5 = sheet.createRow(4);
+		Row row8 = sheet.createRow(7);
+		Row row9 = sheet.createRow(8);
+		
+		Cell headercell_11 = row1.createCell(0);
+		Cell headercell_12 = row1.createCell(1);
+		
+		headercell_11.setCellValue("KMP/Managerial Remuneration Report Summary");
+		headercell_11.setCellStyle(style);
+		String currDate = new SimpleDateFormat("dd-MMM-yyyy HH:mm").format(new Date());	
+		//headercell_12.setCellValue("Report Generated On : "+currDate);
+		//headercell_12.setCellStyle(style);
+		
+		Cell headercell_21 = row2.createCell(0);
+		Cell headercell_22 = row2.createCell(1);
+		 
+		int mon = getMonthNo(payrollMonth.split(" ")[0]);
+		int yr = Integer.parseInt(payrollMonth.split(" ")[1]);
+		String prdEndDate =  getPrdDate(mon,yr);
+		
+		headercell_21.setCellValue("Month");
+		headercell_22.setCellValue("From: 1-Apr-"+finYear+"  To "+prdEndDate);
+		
+		
+		Cell headercell_31 = row3.createCell(0);
+		Cell headercell_32 = row3.createCell(1);
+		headercell_31.setCellValue("FY");
+		int nextyear = finYear+1;
+		headercell_32.setCellValue(finYear+"-"+nextyear);
+		
+		
+		
+		Cell headCell1 = row8.createCell(0);
+		Cell headCell2 = row8.createCell(1);
+		Cell headCell3 = row8.createCell(2);
+		Cell headCell4 = row8.createCell(3);
+		Cell headCell5 = row8.createCell(4);
+		Cell headCell6 = row8.createCell(5);
+		Cell headCell7 = row8.createCell(6);
+		Cell headCell8 = row8.createCell(7);
+		Cell headCell9 = row8.createCell(8);
+		Cell headCell10 = row8.createCell(9);
+		Cell headCell11 = row8.createCell(10);
+		Cell headCell12 = row8.createCell(11);
+		
+		
+		
+		
+		headCell1.setCellValue("S.No");
+		headCell1.setCellStyle(style_grey);
+		headCell2.setCellValue("Employee Code");
+		headCell2.setCellStyle(style_grey);
+		headCell3.setCellValue("Employee Name"); 
+		headCell3.setCellStyle(style_grey);
+		headCell4.setCellValue("Designation");
+		headCell4.setCellStyle(style_grey);
+		headCell5.setCellValue("Grade"); 
+		headCell5.setCellStyle(style_grey);
+		headCell6.setCellValue("PAN"); 
+		headCell6.setCellStyle(style_grey);
+		headCell7.setCellValue("Date of Birth"); 
+		headCell7.setCellStyle(style_grey);
+		headCell8.setCellValue("Age in Years"); 
+		headCell8.setCellStyle(style_grey);
+		headCell9.setCellValue("Eligiblity Start Date"); 
+		headCell9.setCellStyle(style_grey);
+		headCell10.setCellValue("Employee Status");
+		headCell10.setCellStyle(style_grey);
+		headCell11.setCellValue("Eligiblity End Date");
+		headCell11.setCellStyle(style_grey);
+		headCell12.setCellValue("No. of months worked in <"+finYear+"-"+(finYear+1)+">");
+		headCell12.setCellStyle(style_grey);
+		
+		
+		
+		
+		Cell blank_headCell1 = row9.createCell(0);
+		Cell blank_headCell2 = row9.createCell(1);
+		Cell blank_headCell3 = row9.createCell(2);
+		Cell blank_headCell4 = row9.createCell(3);
+		Cell blank_headCell5 = row9.createCell(4);
+		Cell blank_headCell6 = row9.createCell(5);
+		Cell blank_headCell7 = row9.createCell(6);
+		Cell blank_headCell8 = row9.createCell(7);
+		Cell blank_headCell9 = row9.createCell(8);
+		Cell blank_headCell10 = row9.createCell(9);
+		Cell blank_headCell11 = row9.createCell(10);
+		Cell blank_headCell12 = row9.createCell(11);
+		
+		
+		
+		
+		blank_headCell1.setCellValue("");
+		blank_headCell1.setCellStyle(style_grey);
+		blank_headCell2.setCellValue("");
+		blank_headCell2.setCellStyle(style_grey);
+		blank_headCell3.setCellValue(""); 
+		blank_headCell3.setCellStyle(style_grey);
+		blank_headCell4.setCellValue("");
+		blank_headCell4.setCellStyle(style_grey);
+		blank_headCell5.setCellValue(""); 
+		blank_headCell5.setCellStyle(style_grey);
+		blank_headCell6.setCellValue(""); 
+		blank_headCell6.setCellStyle(style_grey);
+		blank_headCell7.setCellValue(""); 
+		blank_headCell7.setCellStyle(style_grey);
+		blank_headCell8.setCellValue(""); 
+		blank_headCell8.setCellStyle(style_grey);
+		blank_headCell9.setCellValue(""); 
+		blank_headCell9.setCellStyle(style_grey);
+		blank_headCell10.setCellValue("");
+		blank_headCell10.setCellStyle(style_grey);
+		blank_headCell11.setCellValue("");
+		blank_headCell11.setCellStyle(style_grey);
+		blank_headCell12.setCellValue("");
+		blank_headCell12.setCellStyle(style_grey);
+	
+		
+		Cell headercell_41 = row4.createCell(0);
+		Cell headercell_42 = row4.createCell(1);
+		headercell_41.setCellValue("Company Name");
+		headercell_42.setCellValue(companyName);
+		
+		Cell headercell_51 = row5.createCell(0);
+		Cell headercell_52 = row5.createCell(1);
+		headercell_51.setCellValue("Report Generated Date & Time");
+		//headercell_52.setCellValue((Double) managerialRemunerationInfoS.getEncashedLeaveAmount());
+		headercell_52.setCellValue(currDate);
+		
+		ManagerialRemunerationInfo managerialRemunerationInfoS = null;
+	/*	
+		managerialRemunerationInfoS = new ManagerialRemunerationInfo();
+		managerialRemunerationInfoS = managerialRemunerationInfoList.get(0);
+	*/
+		int colIndex = 12;
+		
+		{
+			
+			
+			Cell headCell = row8.createCell(colIndex);
+			headCell.setCellValue("Ex-Gratia");
+			headCell.setCellStyle(style_yellow);
+			
+			
+			Cell headCellSub1 = row9.createCell(colIndex);
+			headCellSub1.setCellValue("Opening Balance");
+			headCellSub1.setCellStyle(style_grey);
+			
+			Cell headCellSub2 = row9.createCell(colIndex+1);
+			headCellSub2.setCellValue("Closing Balance");
+			headCellSub2.setCellStyle(style_grey);
+			
+			Cell headCellSub3 = row9.createCell(colIndex+2);
+			headCellSub3.setCellValue("Ex-Gratia - Paid");
+			headCellSub3.setCellStyle(style_grey);
+			
+			Cell headCellSub4 = row9.createCell(colIndex+3);
+			headCellSub4.setCellValue("Net");
+			headCellSub4.setCellStyle(style_grey);
+			
+			
+			
+			Cell headCell_blank_1 = row8.createCell(colIndex+1);
+			headCell_blank_1.setCellValue("");
+			headCell_blank_1.setCellStyle(style_yellow);
+			
+			Cell headCell_blank_2 = row8.createCell(colIndex+2);
+			headCell_blank_2.setCellValue("");
+			headCell_blank_2.setCellStyle(style_yellow);
+			
+			Cell headCell_blank_3 = row8.createCell(colIndex+3);
+			headCell_blank_3.setCellValue("");
+			headCell_blank_3.setCellStyle(style_yellow);
+			
+			
+			
+			sheet.addMergedRegion(new CellRangeAddress(7, 7, colIndex, colIndex+3));
+			CellUtil.setAlignment(headCell, workbook, CellStyle.ALIGN_CENTER);
+			/*
+			CellUtil.setAlignment(headCellSub1, workbook, CellStyle.VERTICAL_TOP);
+			CellUtil.setAlignment(headCellSub2, workbook, CellStyle.VERTICAL_TOP);
+			CellUtil.setAlignment(headCellSub3, workbook, CellStyle.VERTICAL_TOP);
+			CellUtil.setAlignment(headCellSub4, workbook, CellStyle.VERTICAL_TOP);
+			*/
+			colIndex+=4;
+		}
+		
+		
+		
+	
+		
+		ArrayList<String[]> groupFieldsList = GetGroupFieldList();
+		
+		Iterator<String[]> groupFieldsListIterator = groupFieldsList.iterator();
+		while(groupFieldsListIterator.hasNext())
+		{
+			String[] groupFields = groupFieldsListIterator.next();
+			
+			Cell headCell = row8.createCell(colIndex);
+			headCell.setCellValue(groupFields[1]);
+			headCell.setCellStyle(style_yellow);
+			
+			
+			Cell headCellSub1 = row9.createCell(colIndex);
+			headCellSub1.setCellValue("Opening Balance");
+			headCellSub1.setCellStyle(style_grey);
+			
+			Cell headCellSub2 = row9.createCell(colIndex+1);
+			headCellSub2.setCellValue("Closing Balance");
+			headCellSub2.setCellStyle(style_grey);
+			
+			Cell headCellSub3 = row9.createCell(colIndex+2);
+			headCellSub3.setCellValue(groupFields[1]+"- Paid");
+			headCellSub3.setCellStyle(style_grey);
+			
+			Cell headCellSub4 = row9.createCell(colIndex+3);
+			headCellSub4.setCellValue("Net");
+			headCellSub4.setCellStyle(style_grey);
+			
+			
+			
+			Cell headCell_blank_1 = row8.createCell(colIndex+1);
+			headCell_blank_1.setCellValue("");
+			headCell_blank_1.setCellStyle(style_yellow);
+			
+			Cell headCell_blank_2 = row8.createCell(colIndex+2);
+			headCell_blank_2.setCellValue("");
+			headCell_blank_2.setCellStyle(style_yellow);
+			
+			Cell headCell_blank_3 = row8.createCell(colIndex+3);
+			headCell_blank_3.setCellValue("");
+			headCell_blank_3.setCellStyle(style_yellow);
+			
+			
+			
+			sheet.addMergedRegion(new CellRangeAddress(7, 7, colIndex, colIndex+3));
+			CellUtil.setAlignment(headCell, workbook, CellStyle.ALIGN_CENTER);
+			/*
+			CellUtil.setAlignment(headCellSub1, workbook, CellStyle.VERTICAL_TOP);
+			CellUtil.setAlignment(headCellSub2, workbook, CellStyle.VERTICAL_TOP);
+			CellUtil.setAlignment(headCellSub3, workbook, CellStyle.VERTICAL_TOP);
+			CellUtil.setAlignment(headCellSub4, workbook, CellStyle.VERTICAL_TOP);
+			*/
+			colIndex+=4;
+		}
+		
+		
+	ArrayList<String[]> payHeadList = GetPayheadList();
+	
+	ArrayList<String[]> payHeadList_st = new ArrayList<String[]>();
+	ArrayList<String[]> payHeadList_non_st = new ArrayList<String[]>();
+	
+	Iterator<String[]> payHeadListIterator = payHeadList.iterator();
+	while(payHeadListIterator.hasNext())
+	{
+		String[] payHead = payHeadListIterator.next();
+		if(payHead[3].equals("4"))
+		{
+			payHeadList_st.add(payHead);
+		}
+		else
+		{
+			payHeadList_non_st.add(payHead);
+		}
+	}
+	
+	Iterator<String[]> payHeadList_non_stIterator = payHeadList_non_st.iterator();
+	while(payHeadList_non_stIterator.hasNext())
+	{
+		String[] payHead = payHeadList_non_stIterator.next();
+		
+		Cell headCell = row8.createCell(colIndex);
+		headCell.setCellValue(payHead[1]);
+		headCell.setCellStyle(style_green);
+		 
+		
+		Cell headCellSub1 = row9.createCell(colIndex);
+		headCellSub1.setCellValue("");
+		headCellSub1.setCellStyle(style_grey);
+		
+		colIndex++;
+	}
+	
+	
+		Iterator<String[]> payHeadList_stIterator = payHeadList_st.iterator();
+		while(payHeadList_stIterator.hasNext())
+		{
+			String[] payHead = payHeadList_stIterator.next();
+			 
+			if((payHead[4].equals("5"))&&(payHead[3].equals("4")))
+			{
+				if(payHead[5].equals("0"))
+				{
+				Cell headCell = row8.createCell(colIndex);
+				headCell.setCellValue("EPF");
+				headCell.setCellStyle(style);
+				 
+				
+				Cell headCellSub1 = row9.createCell(colIndex);
+				headCellSub1.setCellValue("");
+				headCellSub1.setCellStyle(style_grey);
+				
+				colIndex++;
+				
+				Cell headCell_1 = row8.createCell(colIndex);
+				headCell_1.setCellValue("EPS");
+				headCell_1.setCellStyle(style);
+				 
+				
+				Cell headCellSub1_1 = row9.createCell(colIndex);
+				headCellSub1_1.setCellValue("");
+				headCellSub1_1.setCellStyle(style_grey);
+				
+				colIndex++;
+				}
+				else if(payHead[5].equals("1"))
+				{	
+					Cell headCell = row8.createCell(colIndex);
+					headCell.setCellValue("Arrears-EPF");
+					headCell.setCellStyle(style);
+					 
+					
+					Cell headCellSub1 = row9.createCell(colIndex);
+					headCellSub1.setCellValue("");
+					headCellSub1.setCellStyle(style_grey);
+					
+					colIndex++;
+					
+					Cell headCell_1 = row8.createCell(colIndex);
+					headCell_1.setCellValue("Arrears-EPS");
+					headCell_1.setCellStyle(style);
+					 
+					
+					Cell headCellSub1_1 = row9.createCell(colIndex);
+					headCellSub1_1.setCellValue("");
+					headCellSub1_1.setCellStyle(style_grey);
+					
+					colIndex++;
+				}
+			}
+			else
+			{
+			
+			Cell headCell = row8.createCell(colIndex);
+			headCell.setCellValue(payHead[1]);
+			headCell.setCellStyle(style);
+			 
+			
+			Cell headCellSub1 = row9.createCell(colIndex);
+			headCellSub1.setCellValue("");
+			headCellSub1.setCellStyle(style_grey);
+			
+			colIndex++;
+			}
+			
+			Cell headCell = row8.createCell(colIndex);
+			headCell.setCellValue("Grand Total");
+			headCell.setCellStyle(style_grey);
+			Cell headCell_1 = row8.createCell(colIndex+1);
+			headCell_1.setCellValue("Remuneration (per month)");
+			headCell_1.setCellStyle(style_grey);
+			
+			
+		}
+		
+	
+		
+		Iterator<ManagerialRemunerationInfo> managerialRemunerationInfoListIterator = managerialRemunerationInfoList.iterator();
+		
+		
+		
+		
+		
+		Connection con = null;
+		try
+		{
+		int i=0;
+		
+		con = ConnectionPool.getConnection();
+		
+		DBUtility.update("update payroll_report_log set TOTAL_RECORDS= "+managerialRemunerationInfoList.size()+" where DOWNLOAD_ID="+logId,null);
+		
+		while (managerialRemunerationInfoListIterator.hasNext()) {
+			i++;
+			
+			DBUtility.update("update payroll_report_log set COMPLETED_RECORDS= "+i+" where DOWNLOAD_ID="+logId,null);
+			
+			Double grandTotal = 0.00;
+			
+			managerialRemunerationInfoS = new ManagerialRemunerationInfo();
+			managerialRemunerationInfoS = managerialRemunerationInfoListIterator.next();
+			
+			Row row = sheet.createRow(9+i);
+			
+			Cell cell1 = row.createCell(0);
+			Cell cell2 = row.createCell(1);
+			Cell cell3 = row.createCell(2);
+			Cell cell4 = row.createCell(3);
+			Cell cell5 = row.createCell(4);
+			Cell cell6 = row.createCell(5);
+			Cell cell7 = row.createCell(6);
+			Cell cell8 = row.createCell(7);
+			Cell cell9 = row.createCell(8);
+			Cell cell10 = row.createCell(9);
+			Cell cell11 = row.createCell(10);
+			Cell cell11_1 = row.createCell(11);
+			
+			cell1.setCellValue(i);
+			cell2.setCellValue(managerialRemunerationInfoS.getGEN_ID());
+			cell3.setCellValue(managerialRemunerationInfoS.getEMPLOYEE_NAME());
+			
+			if(managerialRemunerationInfoS.getTransferIn() == 1)
+			{
+				cell2.setCellStyle(style_greentext);
+				cell3.setCellStyle(style_greentext);
+			}
+			if(managerialRemunerationInfoS.getTransferOut() == 1)
+			{
+				cell2.setCellStyle(style_redtext);
+				cell3.setCellStyle(style_redtext);
+			}
+			
+			cell4.setCellValue(managerialRemunerationInfoS.getDESIGNATION());
+			cell5.setCellValue(managerialRemunerationInfoS.getGRADE());
+			cell6.setCellValue(managerialRemunerationInfoS.getPAN());
+			cell7.setCellValue(formatDate(managerialRemunerationInfoS.getDOB()));
+			cell8.setCellValue(managerialRemunerationInfoS.getAgeYears());
+			cell9.setCellValue(formatDate(managerialRemunerationInfoS.getPRD_START_DATE()));
+			cell10.setCellValue(managerialRemunerationInfoS.getSTATUS());
+			cell11.setCellValue(formatDate(managerialRemunerationInfoS.getPRD_END_DATE()));
+			
+			cell11_1.setCellValue(managerialRemunerationInfoS.getNoOfMonthsWorkedInPRD());
+			cell11_1.setCellStyle(style_number);
+			// for Ex-Gratia
+			
+			Cell cell12 = row.createCell(12);
+			Cell cell13 = row.createCell(13);
+			Cell cell14 = row.createCell(14);
+			Cell cell15 = row.createCell(15);
+			cell12.setCellStyle(style_number);
+			cell13.setCellStyle(style_number);
+			cell14.setCellStyle(style_number);
+			cell15.setCellStyle(style_number);
+			
+			
+			int isFF = Integer.parseInt(DBUtility.selectFieldAndReturnAsString("select count(*) from emp_ff where EMP_FF_CUST_ID = "+loginInfo.getCustomer_Id()+" and EMP_FF_EMP_ID = "+managerialRemunerationInfoS.getEMP_ID(), con));
+			String[] empExGratia = null;
+			if(isFF ==0)
+			{
+				empExGratia = GetEmployeeExgratia(Integer.toString(managerialRemunerationInfoS.getEMP_ID()) , managerialRemunerationInfoS.getPRD_START_DATE() , managerialRemunerationInfoS.getPRD_END_DATE() , managerialRemunerationInfoS.getPRD_END_DATE(), managerialRemunerationInfoS.getPRD_START_DATE() , con);
+			}
+			else
+			{
+				String ff_date=DateUtility.convertStringToSqlDate(Application.getNextDate(DateUtility.convertStringToTimestamp(getLastdate_ofmonth(managerialRemunerationInfoS.getPRD_END_DATE()))).toString()).toString();
+				System.out.println("ff_date : "+managerialRemunerationInfoS.getEMP_ID()+"-"+ff_date);
+				empExGratia = GetEmployeeExgratia(Integer.toString(managerialRemunerationInfoS.getEMP_ID()) , managerialRemunerationInfoS.getPRD_START_DATE() , managerialRemunerationInfoS.getPRD_END_DATE() , endDate , ff_date ,con);	
+			}
+			
+			
+			Double openingExgratia = Double.parseDouble(empExGratia[1]);
+			Double accruedExgratia = Double.parseDouble(empExGratia[2]);
+			Double paidExgratia = Double.parseDouble(empExGratia[3]);
+			if(isFF == 1)
+			{ 
+				paidExgratia = Double.parseDouble(empExGratia[3])+Double.parseDouble(empExGratia[4]);
+				accruedExgratia =  Double.parseDouble(empExGratia[5]);
+			}
+			
+			
+			Double closingExgratia = openingExgratia + accruedExgratia - paidExgratia;
+			Double netExgratia = paidExgratia + closingExgratia - openingExgratia ;
+			
+			
+			if(managerialRemunerationInfoS.getTransferIn() == 1)
+			{
+				Date transferEndDate = new SimpleDateFormat("yyyy-MM-dd").parse(managerialRemunerationInfoS.getPRD_START_DATE());
+				
+				Calendar cal = Calendar.getInstance();
+				cal.setTime(transferEndDate);
+				cal.add(Calendar.DAY_OF_YEAR,-1);
+				Date transferEndDateoneDayBefore= cal.getTime();
+				
+				
+				String transferDate = new SimpleDateFormat("yyyy-MM-dd").format(transferEndDateoneDayBefore);
+				
+				String[] empExGratiaTransferIn = GetEmployeeExgratia(Integer.toString(managerialRemunerationInfoS.getEMP_ID()) , finYear+"-04-01" , transferDate , transferDate ,managerialRemunerationInfoS.getPRD_START_DATE(), con);	
+				
+				
+				Double openingExgratiaTransferIn = Double.parseDouble(empExGratiaTransferIn[1]);
+				Double accruedExgratiaTransferIn = Double.parseDouble(empExGratiaTransferIn[2]);
+				Double paidExgratiaTransferIn = Double.parseDouble(empExGratiaTransferIn[3]);
+				Double closingExgratiaTransferIn = openingExgratiaTransferIn + accruedExgratiaTransferIn - paidExgratiaTransferIn;
+				
+				
+				
+				openingExgratia = closingExgratiaTransferIn;
+				
+				//closingExgratia = openingExgratia + accruedExgratia - paidExgratia;
+				
+				//netExgratia = paidExgratia + closingExgratia - openingExgratia ;
+				
+				
+				
+				cell12.setCellValue(RoundOff(openingExgratia));
+				cell13.setCellValue(RoundOff(closingExgratia));
+				cell14.setCellValue(RoundOff(paidExgratia));
+				cell15.setCellValue(RoundOff(netExgratia));
+				
+				grandTotal+=RoundOff(netExgratia);
+			}
+			else
+			{
+				cell12.setCellValue(RoundOff(openingExgratia));
+				cell13.setCellValue(RoundOff(openingExgratia+netExgratia-paidExgratia));
+				cell14.setCellValue(RoundOff(paidExgratia));
+				cell15.setCellValue(RoundOff(netExgratia));
+				
+				grandTotal+=RoundOff(netExgratia);
+			
+			}
+						
+			
+			
+		
+			
+			int itx = 16;
+			
+			
+			
+			Iterator<String[]> groupFieldsListIterator1 = groupFieldsList.iterator();
+			while(groupFieldsListIterator1.hasNext())
+			{
+				String[] groupField = groupFieldsListIterator1.next(); 
+				String[] empGroupHead = null;
+				if(isFF == 0)
+				{
+					 empGroupHead = GetEmployeeGroupAmount(Integer.toString(managerialRemunerationInfoS.getEMP_ID()) , groupField[2], groupField[0], managerialRemunerationInfoS.getPRD_START_DATE(), managerialRemunerationInfoS.getPRD_END_DATE(),managerialRemunerationInfoS.getPRD_END_DATE(),managerialRemunerationInfoS.getPRD_START_DATE(), con);
+				}
+				else
+				{
+					String ff_date=DateUtility.convertStringToSqlDate(Application.getNextDate(DateUtility.convertStringToTimestamp(getLastdate_ofmonth(managerialRemunerationInfoS.getPRD_END_DATE()))).toString()).toString();
+					 empGroupHead = GetEmployeeGroupAmount(Integer.toString(managerialRemunerationInfoS.getEMP_ID()) , groupField[2], groupField[0], managerialRemunerationInfoS.getPRD_START_DATE(),managerialRemunerationInfoS.getPRD_END_DATE(),endDate,ff_date, con);
+				}
+				
+				
+				Cell cell_1 =  row.createCell(itx);
+				Cell cell_2 =  row.createCell(itx+1);
+				Cell cell_3 =  row.createCell(itx+2);
+				Cell cell_4 =  row.createCell(itx+3);
+				
+				cell_1.setCellStyle(style_number);
+				cell_2.setCellStyle(style_number);
+				cell_3.setCellStyle(style_number);
+				cell_4.setCellStyle(style_number);
+				
+				
+				if((empGroupHead!=null)&&(empGroupHead[1] != null))
+				{
+					
+				Double paid = Double.parseDouble(empGroupHead[2]) - Double.parseDouble(empGroupHead[3]);
+				Double accrued = Double.parseDouble(empGroupHead[6]);
+				Double opening = Double.parseDouble(empGroupHead[1]);
+				
+				if(isFF == 1)
+				{
+					paid = paid + (Double.parseDouble(empGroupHead[4])- Double.parseDouble(empGroupHead[5]));
+				}
+				
+				
+				Double closing = opening + accrued - paid;
+				Double net = paid + closing - opening;
+				
+				
+			
+					if(managerialRemunerationInfoS.getTransferIn() == 1)
+					{
+						Date transferEndDate = new SimpleDateFormat("yyyy-MM-dd").parse(managerialRemunerationInfoS.getPRD_START_DATE());
+						//Date transferEndDate = new SimpleDateFormat("yyyy-MM-dd").parse(getfirstdate_ofmonth(managerialRemunerationInfoS.getPRD_END_DATE()));
+						Calendar cal = Calendar.getInstance();
+						cal.setTime(transferEndDate);
+						cal.add(Calendar.DAY_OF_YEAR,-1);
+						Date transferEndDateoneDayBefore= cal.getTime();
+						
+						String transferDate = new SimpleDateFormat("yyyy-MM-dd").format(transferEndDateoneDayBefore);
+						
+						
+						String[] empGroupHeadTransfer = GetEmployeeGroupAmount(Integer.toString(managerialRemunerationInfoS.getEMP_ID()) , groupField[2], groupField[0], finYear+"-04-01" ,transferDate ,transferDate, managerialRemunerationInfoS.getPRD_START_DATE(), con);
+						
+						if((empGroupHeadTransfer[2]!=null))
+						{
+						Double paid_transfer = Double.parseDouble(empGroupHeadTransfer[2]) - Double.parseDouble(empGroupHeadTransfer[3]);
+						Double accrued_transfer = Double.parseDouble(empGroupHeadTransfer[6]);
+						Double opening_transfer = Double.parseDouble(empGroupHeadTransfer[1]);
+						Double closing_transfer = opening_transfer + accrued_transfer - paid_transfer;
+						
+						opening = closing_transfer;
+						}
+						//closing = opening + accrued - paid;
+						
+						//net = paid + closing - opening;
+						
+						cell_1.setCellValue(RoundOff(opening));
+						cell_2.setCellValue(RoundOff(opening+net-paid));
+						cell_3.setCellValue(RoundOff(paid));
+						cell_4.setCellValue(RoundOff(net));
+						grandTotal+=RoundOff(net);
+						
+						
+					}
+					else
+					{
+						cell_1.setCellValue(RoundOff(opening));
+						cell_2.setCellValue(RoundOff(closing));
+						cell_3.setCellValue(RoundOff(paid));
+						cell_4.setCellValue(RoundOff(net));
+						grandTotal+=RoundOff(net);
+							
+					}
+					
+				
+				}
+				else
+				{
+					cell_1.setCellValue(0.00);
+					cell_2.setCellValue(0.00);
+					cell_3.setCellValue(0.00);
+					cell_4.setCellValue(0.00);
+				}
+				itx+=4;
+			}
+			
+			ArrayList<String[]> payheadDataList = GetPayheadDataList(managerialRemunerationInfoS.getPRD_START_DATE(), managerialRemunerationInfoS.getPRD_END_DATE(), Integer.toString(managerialRemunerationInfoS.getEMP_ID()), con);			
+			
+			
+			
+			for(int k=0;k<payHeadList_non_st.size();k++){
+			    System.out.println("Non St List : "+k+" :"+Arrays.toString(payHeadList_non_st.get(k)));
+			    
+			} 
+			for(int l=0;l<payHeadList_st.size();l++){
+			    System.out.println("St List : "+l+" :"+Arrays.toString(payHeadList_st.get(l)));
+			}
+			for(int l=0;l<payheadDataList.size();l++){
+			    System.out.println("Data List : "+l+" :"+Arrays.toString(payheadDataList.get(l)));
+			}
+			
+			
+			Iterator<String[]> payHeadList_non_stIterator1 = payHeadList_non_st.iterator();
+			
+
+			while(payHeadList_non_stIterator1.hasNext())
+			{
+				String[] payHead1 = payHeadList_non_stIterator1.next();
+				
+				Iterator<String[]> payheadDataListIterator = payheadDataList.iterator();
+				int matches = 0;
+				while(payheadDataListIterator.hasNext())
+				{
+					String[] payHeadData = payheadDataListIterator.next();
+					if((payHeadData[4].equals(payHead1[0]))&&(payHeadData[9].equals(payHead1[5])))
+					{
+						Cell cell =  row.createCell(itx);
+						cell.setCellStyle(style_number);
+						cell.setCellValue(Double.parseDouble(payHeadData[0]));
+						grandTotal+=Double.parseDouble(payHeadData[0]);
+						matches = 1;
+					}
+					
+				}
+				
+				if(matches == 0)
+				{	
+				Cell cell =  row.createCell(itx);
+				cell.setCellStyle(style_number);
+				cell.setCellValue(Double.parseDouble("0"));
+				}
+				
+				itx++;
+			}
+			
+			
+			
+			
+	Iterator<String[]> payHeadList_stIterator1 = payHeadList_st.iterator();
+			
+
+			while(payHeadList_stIterator1.hasNext())
+			{
+				String[] payHead1 = payHeadList_stIterator1.next();
+				
+				Iterator<String[]> payheadDataListIterator = payheadDataList.iterator();
+				int matches = 0;
+				
+				while(payheadDataListIterator.hasNext())
+				{
+					
+					String[] payHeadData = payheadDataListIterator.next();
+					
+					if((payHeadData[4].equals(payHead1[0]))&&(payHeadData[9].equals(payHead1[5])))
+					{
+						matches = 1;
+						if((payHeadData[7].equals("4"))&&(payHeadData[8].equals("5")))
+						{
+							Cell cell_1 =  row.createCell(itx);
+							Cell cell_2 =  row.createCell(itx+1);
+							cell_1.setCellStyle(style_number);
+							cell_2.setCellStyle(style_number);
+							
+							cell_1.setCellValue(Double.parseDouble(payHeadData[2]));
+							cell_2.setCellValue(Double.parseDouble(payHeadData[1]));
+							grandTotal+= Double.parseDouble(payHeadData[2])+Double.parseDouble(payHeadData[1]);
+							itx+=2;
+							
+						}
+						else
+						{
+						Cell cell =  row.createCell(itx);
+						cell.setCellStyle(style_number);
+						
+						cell.setCellValue(Double.parseDouble(payHeadData[0]));
+						
+						grandTotal+=Double.parseDouble(payHeadData[0]);
+						itx++;
+						}
+						
+					}
+				
+				}
+			
+				if(matches == 0)
+				{
+					Cell cell =  row.createCell(itx);
+					cell.setCellStyle(style_number);
+					
+					cell.setCellValue(Double.parseDouble("0"));
+					itx++;
+				if((payHead1[3].equals("4"))&&(payHead1[4].equals("5")))
+				{
+					Cell cell_1 =  row.createCell(itx);
+					cell_1.setCellStyle(style_number);
+					cell_1.setCellValue(Double.parseDouble("0"));
+					itx++;
+				}
+				
+				}
+			
+			
+			
+			}
+			Cell cell_total = row.createCell(itx);
+			Cell cell_total_pm = row.createCell(itx+1);
+			
+			cell_total.setCellStyle(style_number);
+			cell_total_pm.setCellStyle(style_number);
+			
+			DecimalFormat f = new DecimalFormat("##.00");
+			
+			
+			grandTotal =   Double.parseDouble(f.format(grandTotal));
+			
+			cell_total.setCellValue(grandTotal);
+			
+			Double grandTotalPM = grandTotal/managerialRemunerationInfoS.getNoOfMonthsWorkedInPRD();
+			
+			grandTotalPM =   Double.parseDouble(f.format(grandTotalPM));
+			
+			cell_total_pm.setCellValue(grandTotalPM);
+			
+			
+		}
+		
+		}
+		catch(Exception e)
+		{
+			e.printStackTrace();
+		}
+		finally
+		{
+			if(con!=null)
+			{
+				try {
+					con.close();
+				} catch (SQLException e) {
+					// TODO Auto-generated catch block
+					e.printStackTrace();
+				}
+			}
+		}
+			
+		
+		return workbook;
+	}
+	
+	
+	private static String getDate(int month, int year) {
+	    Calendar calendar = Calendar.getInstance();
+	    // passing month-1 because 0-->jan, 1-->feb... 11-->dec
+	    calendar.set(year, month - 1, 1);
+	    calendar.set(Calendar.DATE, calendar.getActualMaximum(Calendar.DATE));
+	    Date date = calendar.getTime();
+	    DateFormat DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd");
+	    return DATE_FORMAT.format(date);
+	    
+	}
+	
+	private static String formatDate(String dtStr)
+	{
+		DateFormat DATE_FORMAT_OUTPUT = new SimpleDateFormat("dd-MMM-yyyy");
+		DateFormat DATE_FORMAT_INPUT = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+		Date dt = null;
+		try {
+			dt = DATE_FORMAT_INPUT.parse(dtStr);
+		} catch (ParseException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+		String outDate = DATE_FORMAT_OUTPUT.format(dt);
+		
+		return(outDate);
+		
+	}
+	
+	private static String getPrdDate(int month, int year) {
+	    Calendar calendar = Calendar.getInstance();
+	    // passing month-1 because 0-->jan, 1-->feb... 11-->dec
+	    calendar.set(year, month - 1, 1);
+	    calendar.set(Calendar.DATE, calendar.getActualMaximum(Calendar.DATE));
+	    Date date = calendar.getTime();
+	    DateFormat DATE_FORMAT = new SimpleDateFormat("dd-MMM-yyyy");
+	    return DATE_FORMAT.format(date);
+	    
+	}
+	
+	private int getMonthNo(String month)
+	{
+		int monthNo = 0;
+		if (month.equals("Jan"))
+		{
+			monthNo = 1;
+		}
+		if (month.equals("Feb"))
+		{
+			monthNo = 2;
+		}
+		if (month.equals("Mar"))
+		{
+			monthNo = 3;
+		}
+		if (month.equals("Apr"))
+		{
+			monthNo = 4;
+		}
+		if (month.equals("May"))
+		{
+			monthNo = 5;
+		}
+		if (month.equals("Jun"))
+		{
+			monthNo = 6;
+		}
+		if (month.equals("July"))
+		{
+			monthNo = 7;
+		}
+		if (month.equals("Aug"))
+		{
+			monthNo = 8;
+		}
+		if (month.equals("Sep"))
+		{
+			monthNo = 9;
+		}
+		if (month.equals("Oct"))
+		{
+			monthNo = 10;
+		}
+		if (month.equals("Nov"))
+		{
+			monthNo = 11;
+		}
+		if (month.equals("Dec"))
+		{
+			monthNo = 12;
+		}
+		return monthNo;
+	}
+
+	
+	 private int[] getDateDiff(java.util.Date oldDate, java.util.Date newDate) {
+	        Calendar c1 = Calendar.getInstance();
+	        Calendar c2 = Calendar.getInstance();
+	        
+	        int[] dateDiff = {0,0,0};
+	        if (oldDate.compareTo(newDate) > 0) {
+	            c1.setTime(newDate);
+	            c2.setTime(oldDate);
+	        } else {
+	            System.out.println("invalid");
+	            return dateDiff;
+
+	        }
+	        int year = 0;
+	        int month = 0;
+	        int days = 0;
+	        boolean doneMonth = false;
+	        boolean doneYears = false;
+	        while (c1.before(c2)) {
+	            //log.debug("Still in Loop");
+	            if (!doneYears) {
+	                c1.add(Calendar.YEAR, 1);
+	                year++;
+	            }
+	            if (c1.after(c2) || doneYears) {
+	                if (!doneYears) {
+	                    doneYears = true;
+	                    year--;
+	                    c1.add(Calendar.YEAR, -1);
+	                }   
+	                if (!doneMonth) {
+	                    c1.add(Calendar.MONTH, 1);
+	                    month++;
+	                }
+	                if (c1.after(c2) || doneMonth) {
+	                    if (!doneMonth) {
+	                        doneMonth = true;
+	                        month--;
+	                        c1.add(Calendar.MONTH, -1);
+	                    }
+
+	                    c1.add(Calendar.DATE, 1);
+	                    days++;
+	                    if (c1.after(c2)) {
+	                        days--;
+	                    }
+	                    
+	                    // this will not be executed
+	                    if (days == 31 || month==12) {
+	                        break;
+	                    }
+	                }
+	            }
+	        }
+	        dateDiff[0] = year;
+	        dateDiff[1] = month;
+	        dateDiff[2] = days;
+	       
+	        return dateDiff;
+
+	    }
+	
+	 
+	 private String[] GetEmployeeExgratia(String userId,String startDate,String endDate,String prdEndDate,String startDateFF,Connection con) throws Exception
+	 {
+		 String exGratiaPhId = "";
+		 try {
+			exGratiaPhId = DBUtility.selectFieldAndReturnAsString("select * from payhead  where PH_CUST_ID = "+loginInfo.getCustomer_Id()+" and PH_TYPE = 12 and PH_SUBTYPE =15", con);
+		} catch (Exception e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+		 
+		 String sql =  "SELECT nvl(Sum(exgratia_ctc),0),"
+				 +"       nvl(Sum(exgratia_opening_bal),0), "
+				 +"       nvl(Sum(balance),0), "
+				 +"       nvl(Sum(paid),0), "
+				 +"       nvl(Sum(paidff),0), "
+				 +"       nvl(Sum(accruedff),0) "
+				 +"FROM   (SELECT employee_id, "
+				 +"               actualcomp AS Exgratia_ctc, "
+				 +"               NULL       AS EXGRATIA_OPENING_BAL, "
+				 +"               NULL       AS BALANCE, "
+				 +"               NULL       AS PAID, "
+				 +"               NULL       AS PAIDFF, "
+				 +"               NULL       AS ACCRUEDFF "
+				 +"        FROM   employee_comphistory "
+				 +"        WHERE  history_id = (SELECT Max(history_id) "
+				 +"                             FROM   employee_comphistory eh "
+				 +"                             WHERE  employee_id = "+userId
+				 +"                                    AND Date(eh.comp_valid_from) <= '"+endDate+"' "
+				 +"                                    AND action_type != 3) "
+				 +"               AND comp_id =  "+exGratiaPhId
+				 +"        UNION "
+				 +"        SELECT it_dtls_user_id, "
+				 +"               NULL                                                 AS "
+				 +"               Exgratia_ctc, "
+				 +"               Round(Sum(value(it_dtls_ex_gratia_app_sal, 0)) / 12) AS "
+				 +"               EXGRATIA_OPENING_BAL, "
+				 +"               NULL                                                 AS BALANCE, "
+				 +"               NULL                                                 AS Paid, "
+				 +"               NULL                                                 AS PAIDFF, "
+				 +"               NULL                                                 AS ACCRUEDFF "
+				 +"        FROM   ind_it_dtls "
+				 +"        WHERE  it_dtls_yr_id = "+(finYear-1)
+				 +"               AND it_dtls_user_id = "+userId
+				 +"               AND value(it_dtls_ex_gratia_app_sal, 0) <> 0 "
+				 +"               AND "
+				 +"Compare_fy_months(Month('"+(finYear-1)+"-04-01'), "
+				 +"administ.Tax_year('"+(finYear-1)+"-04-01', 78), it_dtls_mon_no, it_dtls_yr_id) IN ( "
+				 +"2, 3 ) "
+				 +"AND "
+				 +"Compare_fy_months(Month('"+finYear+"-03-31'), "
+				 +"administ.Tax_year('"+finYear+"-03-31', 78), it_dtls_mon_no, it_dtls_yr_id) IN ( "
+				 +"1, 2 ) "
+				 +"GROUP  BY it_dtls_user_id "
+				 +"UNION "
+				 +" SELECT it_dtls_user_id, "
+				 +" NULL                                                 AS Exgratia_ctc, "
+				 +" NULL                                                 AS "
+				 +" EXGRATIA_OPENING_BAL, "
+				 +" Round(Sum(value(it_dtls_ex_gratia_app_sal, 0)) / 12) AS BALANCE, "
+				 +" NULL                                                 AS Paid, "
+				 +" NULL                                                 AS PAIDFF, "
+				 +" NULL                                                 AS ACCRUEDFF "
+				 +" FROM   ind_it_dtls "
+				 +" WHERE  it_dtls_yr_id = "+finYear+" "
+				 +" AND it_dtls_user_id = "+ userId
+				 +" AND value(it_dtls_ex_gratia_app_sal, 0) <> 0 "
+				 +" AND "
+				 +" Compare_fy_months(Month('"+startDate+"'), "
+				 +" administ.Tax_year('"+startDate+"', 78), it_dtls_mon_no, it_dtls_yr_id) IN ( "
+				 +" 2, 3 ) "
+				 +" AND "
+				 +" Compare_fy_months(Month('"+endDate+"'), "
+				 +" administ.Tax_year('"+endDate+"', 78), it_dtls_mon_no, it_dtls_yr_id) IN ( "
+				 +"1, 2 ) "
+				 +" GROUP  BY it_dtls_user_id "
+				 +" UNION "
+				 +" SELECT paydtl_user_id AS employee_id, "
+				 +" NULL           AS Exgratia_ctc, "
+				 +" NULL           AS EXGRATIA_OPENING_BAL, "
+				 +" NULL           AS BALANCE, "
+				 +" paydtl_value   AS paid, "
+				 +" NULL           AS PAIDFF, "
+				 +" NULL           AS ACCRUEDFF "
+				 +" FROM   pay_user_main, "
+				 +" pay_user_dtls "
+				 +" WHERE  paymain_user_id = "+userId
+				 +" AND paymain_st_dt >= '"+startDate+"' "
+				 +" AND paymain_end_dt <= '"+getLastdate_ofmonth(endDate)+"' "
+				 +" AND paymain_status = 'C' "
+				 +" AND paydtl_ph_id =  "+exGratiaPhId
+				 +" AND paydtl_pslip_app = 1 "
+				 +" AND paymain_user_id = paydtl_user_id "
+				 +" AND paymain_run_id = paydtl_run_id "
+				 +" UNION "
+				 +" SELECT paydtl_user_id AS employee_id, "
+				 +" NULL           AS Exgratia_ctc, "
+				 +" NULL           AS EXGRATIA_OPENING_BAL, "
+				 +" NULL           AS BALANCE, "
+				 +" NULL           AS paid, "
+				 +" paydtl_value   AS PAIDFF, "
+				 +" NULL           AS ACCRUEDFF "
+				 +" FROM   pay_user_main, "
+				 +" pay_user_dtls "
+				 +" WHERE  paymain_user_id =  "+userId
+				 +" AND paymain_st_dt >= '"+startDateFF+"' "
+				 +" AND paymain_end_dt <= '"+getLastdate_ofmonth(prdEndDate)+"' "
+				 +" AND paymain_status = 'C' "
+				 +" AND paydtl_ph_id = "+exGratiaPhId
+				 +" AND paydtl_pslip_app = 1 "
+				 +" AND paymain_user_id = paydtl_user_id "
+				 +" AND paymain_run_id = paydtl_run_id "
+				 +" UNION "
+				 +" SELECT it_dtls_user_id, "
+				 +" NULL                                                 AS Exgratia_ctc, "
+				 +" NULL                                                 AS "
+				 +" EXGRATIA_OPENING_BAL, "
+				 +" NULL                                                 AS BALANCE, "
+				 +" NULL                                                 AS Paid, "
+				 +" NULL                                                 AS PAIDFF, "
+				 +" Round(Sum(value(it_dtls_ex_gratia_app_sal, 0)) / 12) AS ACCRUEDFF "
+				 +" FROM   ind_it_dtls "
+				 +" WHERE  it_dtls_yr_id = "+finYear
+				 +" AND it_dtls_user_id = "+userId
+				 +" AND value(it_dtls_ex_gratia_app_sal, 0) <> 0 "
+				 +" AND "
+				 +" Compare_fy_months(Month('"+startDate+"'), "
+				 +" administ.Tax_year('"+startDate+"', 78), it_dtls_mon_no, it_dtls_yr_id) IN ( "
+				 +" 2, 3 ) "
+				 +" AND "
+				 +" Compare_fy_months(Month('"+prdEndDate+"'), "
+				 +" administ.Tax_year('"+prdEndDate+"', 78), it_dtls_mon_no, it_dtls_yr_id) IN ( "
+				 +" 1, 2 ) "
+				 +" GROUP  BY it_dtls_user_id)table ";
+		 
+		 System.out.println("Ex Gratia Qry ::"+sql);
+		 String[] exGratia = null;
+		 
+		try {
+			exGratia = DBUtility.selectFieldsAndReturnAsStringArray(sql, con);
+		} catch (Exception e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+		 
+		 
+		 
+		 return exGratia;
+	 }
+	 
+	 static <T> T[] append(T[] arr, T element) {
+		    final int N = arr.length;
+		    arr = Arrays.copyOf(arr, N + 1);
+		    arr[N] = element;
+		    return arr;
+		}
+	 
+	 private String[] GetEmployeeGroupAmount(String userId,String compIDs,String compId,String startDate,String endDate,String ffEndDate,String ffStartDate,Connection con)
+	 {
+		 
+		 
+		 String sql = "SELECT"
+				 +"  nvl(e.ACTUALCOMP,0) AS AMOUNT,"
+				 +"  (SELECT"
+				 +"    nvl(SUM(BRT_FWD_PY), 0)"
+				 +"  FROM reclaimbalance"
+				 +"  WHERE COMPONENT_ID IN ("+compIDs+")"
+				 +"  AND USER_ID = e.employee_id"
+				 +"  AND YEAR = '2016-2017')"
+				 +"  AS OPENING_BALANCE,"
+				 +"  (SELECT"
+				 +"    nvl(SUM(p.paydtl_value), 0) AS amount"
+				 +"  FROM pay_user_main m,"
+				 +"       pay_user_dtls p"
+				 +"  WHERE m.paymain_user_id = "+userId
+				 +"  AND m.paymain_run_id = p.paydtl_run_id"
+				 +"  AND m.paymain_user_id = p.paydtl_user_id"
+				 +"  AND paydtl_ph_nature = 1"
+				 +"  AND nvl(p.paydtl_latest_run_id, 0) = 0"
+				 +"  AND (nvl(p.paydtl_ref_id, 0) = 0"
+				 +"  OR p.paydtl_ref_id IN (SELECT"
+				 +"    paydtl_id"
+				 +"  FROM pay_user_dtls"
+				 +"  WHERE paydtl_run_id = p.paydtl_run_id"
+				 +"  AND paydtl_user_id = p.paydtl_user_id"
+				 +"  AND paydtl_ph_type = 6)"
+				 +"  )"
+				 +"  AND m.PAYMAIN_ST_DT >= '"+startDate+"'"
+				 +"  AND m.PAYMAIN_END_DT <= '"+endDate+"'"
+				 +"  AND p.paydtl_ph_id IN ("+compIDs+"))"
+				 +"  AS TOTAL_AMOUNT,"
+				 +"  (SELECT"
+				 +"    nvl(SUM(p.paydtl_value), 0) AS amount"
+				 +"  FROM pay_user_main m,"
+				 +"       pay_user_dtls p"
+				 +"  WHERE m.paymain_user_id = "+userId
+				 +"  AND m.paymain_run_id = p.paydtl_run_id"
+				 +"  AND m.paymain_user_id = p.paydtl_user_id"
+				 +"  AND paydtl_ph_nature = 2"
+				 +"  AND nvl(p.paydtl_latest_run_id, 0) = 0"
+				 +"  AND (nvl(p.paydtl_ref_id, 0) = 0"
+				 +"  OR p.paydtl_ref_id IN (SELECT"
+				 +"    paydtl_id"
+				 +"  FROM pay_user_dtls"
+				 +"  WHERE paydtl_run_id = p.paydtl_run_id"
+				 +"  AND paydtl_user_id = p.paydtl_user_id"
+				 +"  AND paydtl_ph_type = 6)"
+				 +"  )"
+				 +"  AND m.PAYMAIN_ST_DT >= '"+startDate+"'"
+				 +"  AND m.PAYMAIN_END_DT <= '"+endDate+"'"
+				 +"  AND p.paydtl_ph_id IN ("+compIDs+"))"
+				 +"  AS TOTAL_AMOUNT2,"
+				 +"  (SELECT"
+				 +"    nvl(SUM(p.paydtl_value), 0) AS amount"
+				 +"  FROM pay_user_main m,"
+				 +"       pay_user_dtls p"
+				 +"  WHERE m.paymain_user_id = "+userId
+				 +"  AND m.paymain_run_id = p.paydtl_run_id"
+				 +"  AND m.paymain_user_id = p.paydtl_user_id"
+				 +"  AND paydtl_ph_nature = 1"
+				 +"  AND nvl(p.paydtl_latest_run_id, 0) = 0"
+				 +"  AND (nvl(p.paydtl_ref_id, 0) = 0"
+				 +"  OR p.paydtl_ref_id IN (SELECT"
+				 +"    paydtl_id"
+				 +"  FROM pay_user_dtls"
+				 +"  WHERE paydtl_run_id = p.paydtl_run_id"
+				 +"  AND paydtl_user_id = p.paydtl_user_id"
+				 +"  AND paydtl_ph_type = 6)"
+				 +"  )"
+				 +"  AND m.PAYMAIN_ST_DT >= '"+ffStartDate+"'"
+				 +"  AND m.PAYMAIN_END_DT <= '"+ffEndDate+"'"
+				 +"  AND p.paydtl_ph_id IN ("+compIDs+"))"
+				 +"  AS TOTAL_AMOUNT_P,"
+				 +"  (SELECT"
+				 +"    nvl(SUM(p.paydtl_value), 0) AS amount"
+				 +"  FROM pay_user_main m,"
+				 +"       pay_user_dtls p"
+				 +"  WHERE m.paymain_user_id = "+userId
+				 +"  AND m.paymain_run_id = p.paydtl_run_id"
+				 +"  AND m.paymain_user_id = p.paydtl_user_id"
+				 +"  AND paydtl_ph_nature = 2"
+				 +"  AND nvl(p.paydtl_latest_run_id, 0) = 0"
+				 +"  AND (nvl(p.paydtl_ref_id, 0) = 0"
+				 +"  OR p.paydtl_ref_id IN (SELECT"
+				 +"    paydtl_id"
+				 +"  FROM pay_user_dtls"
+				 +"  WHERE paydtl_run_id = p.paydtl_run_id"
+				 +"  AND paydtl_user_id = p.paydtl_user_id"
+				 +"  AND paydtl_ph_type = 6)"
+				 +"  )"
+				 +"  AND m.PAYMAIN_ST_DT >= '"+ffStartDate+"'"
+				 +"  AND m.PAYMAIN_END_DT <= '"+ffEndDate+"'"
+				 +"  AND p.paydtl_ph_id IN ("+compIDs+"))"
+				 +"  AS TOTAL_AMOUNT_A"
+				 +" FROM employee_comphistory e"
+				 +" WHERE history_id = (SELECT"
+				 +"  MAX(history_id)"
+				 +" FROM employee_comphistory eh"
+				 +" WHERE employee_id = "+userId
+				 +" AND DATE(eh.comp_valid_from) <= '"+startDate+"'"
+				 +" AND ACTION_TYPE != 3)"
+				 +" AND e.COMP_ID = "+compId;
+		 
+		 
+		 String sqlAccrued = "SELECT"
+				 +"  nvl(SUM(FLEXICOMP_AMOUNT),0)"
+				 +" FROM flexi_user_year,"
+				 +"     Flexi_user_main,"
+				 +"     flexiuser_main_computation"
+				 +" WHERE flexiyear_user_id = "+userId
+				 +" AND FLEXIYEAR_YEAR_ID = "+finYear
+				 +" AND flexiyear_is_active = 1"
+				 +" AND flexiyear_id = fleximain_flexiyear_id"
+				 +" AND FLEXIMAIN_PH_ID = "+compId
+				 +" AND fleximain_id = FLEXICOMP_FLEXIMAIN_ID"
+				 +" AND FLEXICOMP_PRD_START >= '"+startDate+"'"
+				 +" AND FLEXICOMP_PRD_END <= '"+endDate+"'";
+		 
+		 System.out.println("Qry for Group :: "+sql);
+		 System.out.println("Qry for Group Accrued:: "+sqlAccrued);
+		 
+		 		 
+		 String[] groupAmount = null;
+		 
+		 String accrued = null;
+		 
+		 if((compIDs!=null)&&!compIDs.equals(""))
+		 {
+			try {
+				groupAmount = DBUtility.selectFieldsAndReturnAsStringArray(sql, con);
+				accrued = DBUtility.selectFieldAndReturnAsString(sqlAccrued, con);
+			} catch (Exception e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
+			groupAmount = append(groupAmount,accrued);
+		 }
+		 
+			
+			
+		 return groupAmount;
+	 }
+	 
+	 private ArrayList<String[]> GetPayheadDataList(String startDate,String endDate,String userId,Connection con)
+	 {
+		 ArrayList<String[]> payHeadUserList = new ArrayList<String[]>();
+		 
+		 String sql = " select  sum(paydtl_value) Amount,"
+				 +" sum(nvl(PAYDTL_AMT2,0)) as EPS,"
+				 +" sum(nvl(PAYDTL_AMT3,0)) as EPF,"
+				 +" paymain_user_id,"
+				 +"  PAYDTL_ph_id, "
+				 +" ph_name, "
+				 +" PH_SEQ,"
+				 +" paydtl_ph_type, "
+				 +" PAYDTL_PH_SUBTYPE,"
+				 +" paydtl_ref_id "
+				 +" from "
+				 +" pay_user_dtls,"
+				 +" payhead,"
+				 +" pay_user_main"
+				 +" where"
+				 +" paymain_user_id="+userId+"  and "
+				 +"  paymain_st_dt>='"+startDate+"'  and  paymain_end_dt<='"+endDate+"' and "
+				 +" pay_user_main.PAYMAIN_RUN_ID=paydtl_run_id and"
+				 +" paymain_id=paydtl_paymain_id and"
+				 +" pay_user_main.PAYMAIN_STATUS = 'C' and " 
+				 +" nvl(paydtl_ref_id,0)=0 and"
+				 +" nvl(paydtl_latest_run_id,0)=0 and "
+				 +" paydtl_ph_nature=1 and  ( "
+				 +" (paydtl_PSLIP_APP=1 and  paydtl_ph_type not in (7,11))  or  paydtl_ph_type =4) and"
+				 +" ph_id=paydtl_ph_id and"
+				 +" paydtl_value !=0 and"
+				 +" ph_type !=6 "
+				 +" group by  paymain_user_id, paydtl_ph_id, ph_name,ph_seq, paydtl_ph_type, paydtl_ph_subtype, paydtl_ref_id"
+				 +" union"
+				 +" select  sum(paydtl_value) Amount,"
+				 +" sum(nvl(PAYDTL_AMT2,0)) as EPS,"
+				 +" sum(nvl(PAYDTL_AMT3,0)) as EPF,"
+				 +" paydtl_user_id,"
+				 +"  PAYDTL_ph_id ,"
+				 +" 'Arrears-'|| ph_name as ph_name, "
+				 +" PH_SEQ,"
+				 +" paydtl_ph_type,"
+				 +" PAYDTL_PH_SUBTYPE,"
+				 +" 1 as paydtl_ref_id"
+				 +" from "
+				 +" pay_user_dtls a,"
+				 +" payhead"
+				 +" where "
+				 +" a.paydtl_ref_id in ("
+				 +"     select  b.paydtl_id from pay_user_dtls b, "
+				 +"  pay_user_main"
+				 +"     where"
+				 +"     paymain_user_id="+userId+"  and "
+				 +"      paymain_st_dt>='"+startDate+"'  and  paymain_end_dt<='"+endDate+"' and "
+				 +"     paymain_user_id=b.paydtl_user_id and "
+				 +"     pay_user_main.PAYMAIN_RUN_ID=b.paydtl_run_id and"
+				 +" pay_user_main.PAYMAIN_STATUS = 'C' "
+				 +" and  paydtl_ph_type=6) and"
+				 +" paydtl_ph_nature=1 and  ( (paydtl_PSLIP_APP=1 and  paydtl_ph_type not in (7,11))  or  paydtl_ph_type =4) and"
+				 +" a.paydtl_value !=0 "
+				 +" and paydtl_ph_id=ph_id"
+				 +" group by  paydtl_user_id, paydtl_ph_id, ph_name,ph_seq, paydtl_ph_type, paydtl_ph_subtype"
+				 +" order by"
+				 +" PH_SEQ asc,"
+				 +" paydtl_ref_id asc";
+		 
+		 ResultSet rs = null;
+		  try {
+			rs = DBUtility.select(sql, con);
+			 
+			while(rs.next())
+			{
+				String[] payHeadUser = {rs.getString(1),rs.getString(2),rs.getString(3),rs.getString(4),rs.getString(5),rs.getString(6),rs.getString(7),rs.getString(8),rs.getString(9),rs.getString(10)};
+				payHeadUserList.add(payHeadUser);
+			}
+			
+		
+		} catch (Exception e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+		finally
+		{
+			try {
+				rs.close();
+			} catch (SQLException e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
+		}
+		 
+		 
+		 
+		 return payHeadUserList;
+	 }
+	 
+	 
+	 
+	 private ArrayList<String[]> GetPayheadList()
+	 {
+		 ArrayList<String[]> payHeadList = new ArrayList<String[]>();
+		 Connection con = null;
+		 try
+		 {
+		 con = ConnectionPool.getConnection();
+		 int month = getMonthNo(PayrollRunName);
+			
+		 String endDate = getDate(month,Integer.parseInt(payrollMonth.split(" ")[1]));
+		 String startDate = getDate(4,finYear);
+			
+		 String qry = "select  PAYDTL_ph_id as PAYDTL_ph_id ,"
+				 + " ph_name || case when PAYDTL_ITHEAD_ID=9 and PH_CLAIM_TAXABLE=1  then '(Taxable)' else '' end  as ph_name,"
+				 + " PH_SEQ,"
+				 + " paydtl_ph_type,"
+				 + " nvl(PAYDTL_PH_SUBTYPE,0) PAYDTL_PH_SUBTYPE,"
+				 + " paydtl_ref_id from pay_user_dtls,"
+				 + " payhead,"
+				 + " pay_user_main "
+				 + " where "
+				 + " pay_user_main.PAYMAIN_RUN_ID=paydtl_run_id and "
+				 + " paymain_id=paydtl_paymain_id and "
+				 + " paydtl_ref_id=0 and "
+				 + " paydtl_ph_nature=1 and  ( (paydtl_PSLIP_APP=1 and  paydtl_ph_type not in (7,11))  or  paydtl_ph_type =4) and "
+				 + " ph_id=paydtl_ph_id and "
+				 + " paydtl_value !=0 and "
+				 + " ph_type !=6 and  "
+				 + " paydtl_RUN_ID in ("
+				 + " Select payroll_id  from payroll_main where payroll_rule_id in ("
+				 + " Select max(rule_id1 ) from ("
+				 + " Select case when   nvl(COMP_ALL,0)=1 then pay.rule_id  else (select distinct comp.rule_id from   PAYROLLCOMPAPP comp where comp_id="+companyId+"  and comp.rule_id=pay.rule_id) end  as rule_id1 from payrollrule pay where rule_cust_id="+loginInfo.getCustomer_Id()
+				 + " )"
+				 + " ) and PAYROLL_PRD_ST>='"+startDate+"'  and  PAYROLL_PRD_END<='"+endDate+"' "
+				 + " )"
+				 + " and "
+				 + " paydtl_CUST_ID="+loginInfo.getCustomer_Id()
+				 + " union "
+				 + " select distinct (a.PAYDTL_ph_id) as PAYDTL_ph_id,"
+				 + " 'Arrears-'||ph_name as ph_name,"
+				 + " PH_SEQ,"
+				 + " paydtl_ph_type,"
+				 + " paydtl_ph_subtype,"
+				 + " case when a.paydtl_ref_id >0 then 1 else 0 end as paydtl_ref_id  from pay_user_dtls a,"
+				 + " payhead where a.paydtl_ref_id in (select b.paydtl_id from pay_user_dtls b,"
+				 + " payhead "
+				 + " where "
+				 + " b.paydtl_run_id=a.paydtl_run_id and "
+				 + " b.paydtl_user_id=a.paydtl_user_id and "
+				 + " b.paydtl_ph_id=ph_id and "
+				 + " ph_type=6) and "
+				 + " paydtl_ph_nature=1 and  ( (paydtl_PSLIP_APP=1 and  paydtl_ph_type not in (7,11))  or  paydtl_ph_type =4) and "
+				 + " ph_id=a.paydtl_ph_id and "
+				 + " a.paydtl_value !=0 and "
+				 + " paydtl_RUN_ID in ("
+				 + " Select payroll_id  from payroll_main where payroll_rule_id in ("
+				 + " Select max(rule_id1 ) from ("
+				 + " Select case when   nvl(COMP_ALL,0)=1 then pay.rule_id  else (select distinct comp.rule_id from   PAYROLLCOMPAPP comp where comp_id="+companyId+" and comp.rule_id=pay.rule_id) end  as rule_id1 from payrollrule pay where rule_cust_id="+loginInfo.getCustomer_Id()
+				 + " )"
+				 + " ) and PAYROLL_PRD_ST>='"+startDate+"'  and  PAYROLL_PRD_END<='"+endDate+"' "
+				 + " )"
+				 + " and "
+				 + " paydtl_CUST_ID="+loginInfo.getCustomer_Id()
+				 + " order by "
+				 + "PH_SEQ asc,"
+				 + "paydtl_ref_id asc" ;
+		 
+		 
+		 
+		 ResultSet rs = DBUtility.select(qry , con);
+		 
+		 while(rs.next())
+		 {
+			 String[] payHead = {rs.getString("PAYDTL_PH_ID"),rs.getString("PH_NAME") ,rs.getString("PH_SEQ") ,rs.getString("PAYDTL_PH_TYPE") ,rs.getString("PAYDTL_PH_SUBTYPE") ,rs.getString("PAYDTL_REF_ID") };
+			 payHeadList.add(payHead);
+		 }
+		 
+		 
+		 }
+		 catch(Exception e)
+		 {
+		 e.printStackTrace();
+		 
+		 }
+		 finally
+		 {
+			 if(con!=null)
+			 {
+				 try {
+					con.close();
+				} catch (SQLException e) {
+					// TODO Auto-generated catch block
+					e.printStackTrace();
+				}
+			 }
+		 }
+		 
+		 return payHeadList;
+		 
+	 }
+
+	 private ArrayList<String[]> GetGroupFieldList()
+	 {
+		 Connection con = null;
+			ArrayList<String[]> groupPayHeadsSubList = new ArrayList<String[]>();
+		 try
+			{
+				con = ConnectionPool.getConnection();
+				
+				//ps = con.prepareStatement("select DESIGNATION,GRADE_NAME from EMP_HISTORY,GRADE where id = (select max(id) from emp_history where user_id = ? and VALIDTILL_DATE < date ('?')) AND GRADE.GRADE_ID=EMP_HISTORY.GRADE_ID");
+				
+				ResultSet rset = DBUtility.select("select PH_ID,PH_NAME from payhead where PH_CUST_ID = "+loginInfo.getCustomer_Id()+" and PH_GS_TYPE = 'G'", con);
+				ArrayList<String[]> groupPayHeadsList = new ArrayList<String[]>();
+			
+				while(rset.next()){
+					String[] groupPayHeads = {rset.getString("PH_ID"),rset.getString("PH_NAME")};
+					groupPayHeadsList.add(groupPayHeads);
+				}
+				
+				
+				
+				Iterator<String[]> groupPayHeadsListIterator = groupPayHeadsList.iterator();
+				while (groupPayHeadsListIterator.hasNext()) {
+					String[] groupPayHeads = groupPayHeadsListIterator.next();
+					ResultSet rest_sub = DBUtility.select("select ph_id from payhead where PARENT_GROUP = "+groupPayHeads[0], con);
+					String subPayheads = "";
+					int i=0;
+					while(rest_sub.next())
+					{
+						if(i!=0)
+						subPayheads += ",";
+						i++;
+						subPayheads += rest_sub.getString("ph_id");
+					}
+					String[] groupPayHeadsSub = {groupPayHeads[0],groupPayHeads[1],subPayheads}; 
+					groupPayHeadsSubList.add(groupPayHeadsSub);
+				}
+				
+				
+				 
+			}
+			catch(Exception e)
+			{
+				e.printStackTrace();
+			}
+			finally
+			{
+				if(con!=null)
+				{	
+					try {
+						con.close();
+					} catch (SQLException e) {
+						// TODO Auto-generated catch block
+						e.printStackTrace();
+					}
+					con = null;
+				}
+				
+			}
+			
+		 return groupPayHeadsSubList;
+	 }
+	private String MaxDate(String dt1,String dt2)
+	{
+		String maxDate = "";
+		if(dt1==null)
+		{
+			maxDate =  dt2;
+		}
+		if(dt2==null)
+		{
+			maxDate = dt1;
+		}
+		if((dt1!=null)&&(dt2!=null))
+		{
+		DateFormat df = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+		Date dt1Format = null;
+		Date dt2Format = null;
+		try {
+			 dt1Format = df.parse(dt1);
+			 dt2Format = df.parse(dt2);
+		} catch (ParseException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+		
+		if(dt1Format.compareTo(dt2Format) > 0)
+		{
+			maxDate = df.format(dt1Format);	
+		}
+		else 
+		{	
+			maxDate = df.format(dt2Format);
+		}
+		}
+		
+		
+		
+		return maxDate;
+	}
+	 
+	private Double RoundOff(Double input) throws Exception
+	{
+		Double output = 0.00;
+		PayHeadBean payHeadBean = new PayHeadBean();
+		
+		if(input < 0)
+		{
+			output = 0 - Double.parseDouble(payHeadBean.calculateAmount(Double.toString(0-input), 1 ,0));
+		}
+		else
+		{
+			output = Double.parseDouble(payHeadBean.calculateAmount(Double.toString(input), 1 ,0));
+		}
+		
+		
+		return output;
+	}
+	
+	public String getLastdate_ofmonth(String date) throws Exception{
+		
+		 DateFormat sdf = new SimpleDateFormat("yyyy-MM-dd"); 
+		 java.util.Date today =new java.util.Date();
+		 java.util.Date lastDayOfMonth=null;
+		 try{
+		 today=sdf.parse(date);
+
+       Calendar calendar = Calendar.getInstance();  
+       calendar.setTime(today);  
+
+       calendar.add(Calendar.MONTH, 1);  
+       calendar.set(Calendar.DAY_OF_MONTH, 1);  
+       calendar.add(Calendar.DATE, -1);  
+
+        lastDayOfMonth = calendar.getTime();  
+
+       
+   //    System.out.println("Last Day of Month: " + sdf.format(lastDayOfMonth));  
+		
+		 
+		}
+		 
+		 catch(Exception e){
+			 
+			 e.printStackTrace();
+			 throw e;
+			 
+		 }
+       return sdf.format(lastDayOfMonth).toString();
+		
+	}
+	
+	public String getfirstdate_ofmonth(String date) throws Exception{
+		
+		 DateFormat sdf = new SimpleDateFormat("yyyy-MM-dd"); 
+		 java.util.Date today =new java.util.Date();
+		 java.util.Date firstDayOfMonth=null;
+		
+		
+		try{
+			today=sdf.parse(date);
+			Calendar calendar = Calendar.getInstance();   // this takes current date
+			
+			
+			calendar.setTime(today);  
+			
+			calendar.set(Calendar.DAY_OF_MONTH, 1);
+			
+			firstDayOfMonth=calendar.getTime();
+			
+			System.out.println("First Day of Month: " + sdf.format(firstDayOfMonth));   
+		
+		}
+		
+		catch(Exception e){
+			
+			 e.printStackTrace();
+			 throw e;
+		}
+		return sdf.format(firstDayOfMonth).toString();
+	}
+	
+	
+	
+	
+	private String MinDate(String dt1,String dt2)
+	{
+		String minDate = "";
+		if(dt1==null)
+		{
+			minDate =  dt2;
+		}
+		if(dt2==null)
+		{
+			minDate = dt1;
+		}
+		
+		
+		if((dt1!=null)&&(dt2!=null))
+		{
+		DateFormat df = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+		Date dt1Format = null;
+		Date dt2Format = null;
+		try {
+			 dt1Format = df.parse(dt1);
+			 dt2Format = df.parse(dt2);
+		} catch (ParseException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+		
+		if(dt2Format.compareTo(dt1Format) > 0)
+		{
+			minDate = df.format(dt1Format);	
+		}
+		else 
+		{	
+			minDate = df.format(dt2Format);
+		}
+		}
+		
+		
+		
+		return minDate;
+	}
+	
+	private ArrayList<ManagerialRemunerationInfo> GenerateReportData(Session session,String PayrollRunName,int companyId,int finYear) throws SQLException
+	{
+		
+		ArrayList<ManagerialRemunerationInfo> managerialRemunerationInfoList = new  ArrayList<ManagerialRemunerationInfo>();
+		
+		Connection con = null;
+		PreparedStatement ps = null;
+		ResultSet rs = null;
+		ArrayList<String[]> empPeriodsList = new ArrayList<String[]>();
+		try {
+			con = ConnectionPool.getConnection();
+			int month = getMonthNo(PayrollRunName);
+			
+			String endDate = getDate(month,Integer.parseInt(payrollMonth.split(" ")[1])) + " 00:00:00";
+			String startDate = finYear+"-04-01 00:00:00";
+			//String[] empPeriods = new String[3]; 
+			
+			//ps = con.prepareStatement("select USER_ID,COMPANY_ID_APPLICABLE_FROM,COMPANY_ID_APPLICABLE_TO from EMP_HISTORY where COMPANY_ID="+companyId+" and EMP_HIST_STATUS = 1 and (CO_ID_FLAG = 'Y' or CO_ID_FLAG = 'C') and COMPANY_ID_APPLICABLE_FROM < date('"+endDate+"') and (COMPANY_ID_APPLICABLE_TO is null or COMPANY_ID_APPLICABLE_TO > date('"+startDate+"') ) order by user_id asc,COMPANY_ID_APPLICABLE_FROM asc");
+			ps = con.prepareStatement("select EMP_HISTORY.USER_ID,EMP_HISTORY.COMPANY_ID_APPLICABLE_FROM,EMP_HISTORY.COMPANY_ID_APPLICABLE_TO,EMPLOYEE.SEPARATION_DATE,EMPLOYEE.SERVICE_DATE,EMPLOYEE.DOJ,(select count(*) from  ind_tax_working where TAX_YR_ID = "+finYear+"  and TAX_USER_ID =EMP_HISTORY.user_id ) AS PAYROLL_APPLICABLE from EMP_HISTORY,EMPLOYEE where EMP_HISTORY.COMPANY_ID="+companyId+"   and EMP_HIST_STATUS = 1 and (CO_ID_FLAG = 'Y' or CO_ID_FLAG = 'C') and COMPANY_ID_APPLICABLE_FROM < date('"+endDate+"') and (COMPANY_ID_APPLICABLE_TO is null or COMPANY_ID_APPLICABLE_TO > date('"+startDate+"') ) and (SEPARATION_DATE is null or SEPARATION_DATE > date('"+startDate+"'))  AND EMP_HISTORY.USER_ID = EMPLOYEE.EMPLOYEE_ID  order by EMPLOYEE.GEN_ID asc,COMPANY_ID_APPLICABLE_FROM asc");
+			rs = ps.executeQuery();
+			
+			while(rs.next()) 	
+			{
+			
+				int isPayRollApplicableNum = Integer.parseInt(rs.getString("PAYROLL_APPLICABLE"));
+				if(isPayRollApplicableNum>0)
+				{
+				String period_st_date = MaxDate(rs.getString("COMPANY_ID_APPLICABLE_FROM"),startDate);
+				
+				period_st_date = MaxDate(rs.getString("DOJ"), period_st_date);
+				
+				
+				String period_end_date = MinDate(rs.getString("COMPANY_ID_APPLICABLE_TO"),endDate);
+				
+				period_end_date =  MinDate(rs.getString("SEPARATION_DATE"),period_end_date);
+				
+				
+					
+				 Date startDt = new SimpleDateFormat("yyyy-MM-dd").parse(startDate);
+				 Date endDt = new SimpleDateFormat("yyyy-MM-dd").parse(endDate);
+				 Date fromDt = new SimpleDateFormat("yyyy-MM-dd").parse(rs.getString("COMPANY_ID_APPLICABLE_FROM"));
+				 Date serviceDt = new SimpleDateFormat("yyyy-MM-dd").parse(rs.getString("DOJ"));
+
+				 
+				 Date toDt = new SimpleDateFormat("yyyy-MM-dd").parse("3000-01-01");
+				 if(rs.getString("COMPANY_ID_APPLICABLE_TO")!= null )
+				 {
+				 toDt = new SimpleDateFormat("yyyy-MM-dd").parse(rs.getString("COMPANY_ID_APPLICABLE_TO"));
+				 }
+				 Date seperationDt = new SimpleDateFormat("yyyy-MM-dd").parse("3000-01-01");
+				 if(rs.getString("SEPARATION_DATE") !=null )
+				 {
+				 seperationDt =  new SimpleDateFormat("yyyy-MM-dd").parse(rs.getString("SEPARATION_DATE"));
+				 }
+				 
+				 
+				 //not transfer in or out 
+				 
+				 if((fromDt.before(startDt)||fromDt.equals(startDt))&&(toDt.after(endDt)||toDt.equals(endDt)))
+				 {
+					 String[] empPeriods = {rs.getString("USER_ID"),period_st_date,period_end_date,"N","N"};
+					 empPeriodsList.add(empPeriods);
+				 }
+				 //transfer in
+				 else if((fromDt.after(startDt))&&(serviceDt.before(fromDt))&&(toDt.after(endDt)))
+				 {
+					 String[] empPeriods = {rs.getString("USER_ID"),period_st_date,period_end_date,"IN","N"};
+					 empPeriodsList.add(empPeriods);
+				 }
+				 //transfer out
+				 else if((fromDt.before(startDt)||fromDt.equals(startDt))&&(toDt.before(endDt)||toDt.equals(endDt))&&(seperationDt.after(toDt)||seperationDt.equals(toDt)))
+				 {
+					 String[] empPeriods = {rs.getString("USER_ID"),period_st_date,period_end_date,"N","OUT"};
+					 empPeriodsList.add(empPeriods);					 
+				 }
+				 //both transfer in and out
+				 
+				 else if((fromDt.after(startDt)||fromDt.equals(startDt))&&(serviceDt.before(fromDt)||serviceDt.equals(fromDt))&&(toDt.before(endDt)||toDt.equals(endDt))&&(seperationDt.after(toDt)||seperationDt.equals(toDt)))
+				 {
+					 String[] empPeriods = {rs.getString("USER_ID"),period_st_date,period_end_date,"IN","OUT"};
+					 empPeriodsList.add(empPeriods);					 
+				 	 
+				 }
+				 else
+				 {
+					 String[] empPeriods = {rs.getString("USER_ID"),period_st_date,period_end_date,"N","N"};
+					 empPeriodsList.add(empPeriods);
+				 }
+				
+				}
+			}
+			
+		} 
+		catch (Exception e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+		finally
+		{
+			if(con!=null)
+			{
+				con.close();
+				con = null;
+			}
+			if(ps!=null)
+			{
+				ps.close();
+				ps = null;
+			}
+			if(rs!=null)
+			{
+				rs.close();
+				rs = null;
+			}
+		}
+		
+		try
+		{
+			con = ConnectionPool.getConnection();
+			
+			//ps = con.prepareStatement("select DESIGNATION,GRADE_NAME from EMP_HISTORY,GRADE where id = (select max(id) from emp_history where user_id = ? and VALIDTILL_DATE < date ('?')) AND GRADE.GRADE_ID=EMP_HISTORY.GRADE_ID");
+			
+			//  
+			
+			Iterator<String[]> empPeriodsListIterator = empPeriodsList.iterator();
+			ManagerialRemunerationInfo managerialRemunerationInfo = new ManagerialRemunerationInfo();
+			
+			while (empPeriodsListIterator.hasNext()) {
+				
+				managerialRemunerationInfo = null;
+				
+				String[] empPeriods = empPeriodsListIterator.next();
+				String[] empHistDtls = DBUtility.selectFieldsAndReturnAsStringArray("select DESIGNATION,GRADE_NAME from EMP_HISTORY,GRADE where id = (select max(id) from emp_history where user_id = "+empPeriods[0]+" and VALIDTILL_DATE < date ('"+empPeriods[2]+"')) AND GRADE.GRADE_ID=EMP_HISTORY.GRADE_ID", con);
+				managerialRemunerationInfo.setDESIGNATION(empHistDtls[0]);
+				managerialRemunerationInfo.setGRADE(empHistDtls[1]);
+				String[] emptDtls = DBUtility.selectFieldsAndReturnAsStringArray("select EMPLOYEE_NAME,STATUS,GEN_ID,DOB,PAN_NO,SEPARATION_DATE,SERVICE_DATE from EMPLOYEE,EMP_PRIMARYDETAIL where user_id = "+empPeriods[0]+" AND EMP_PRIMARYDETAIL.EMPLOYEE_ID = EMPLOYEE.USER_ID", con);
+				managerialRemunerationInfo.setEMPLOYEE_NAME(emptDtls[0]);
+				
+				
+				
+				managerialRemunerationInfo.setGEN_ID(emptDtls[2]);
+				managerialRemunerationInfo.setDOB(emptDtls[3]);
+				managerialRemunerationInfo.setSERVICE_DATE(emptDtls[6]);
+				managerialRemunerationInfo.setPAN(emptDtls[4]);
+				managerialRemunerationInfo.setPRD_START_DATE(empPeriods[1]);
+				managerialRemunerationInfo.setPRD_END_DATE(empPeriods[2]);
+				managerialRemunerationInfo.setEMP_ID(Integer.parseInt(empPeriods[0]));
+				
+				 DateFormat df = new SimpleDateFormat("yyyy-MM-dd");
+				 if(emptDtls[3]!=null)
+				 {
+				 Date dob = df.parse(emptDtls[3]);
+				 Date currdate = new Date();
+				  int[] age = getDateDiff(currdate,dob); 
+				
+				 managerialRemunerationInfo.setAgeYears(age[0]);
+				 
+				 Date endDt = new SimpleDateFormat("yyyy-MM-dd").parse(empPeriods[2]);
+				 Date startDt = new SimpleDateFormat("yyyy-MM-dd").parse(empPeriods[1]);
+				 Date serviceDt = new SimpleDateFormat("yyyy-MM-dd").parse(emptDtls[6]);
+				
+				 int month = getMonthNo(PayrollRunName);
+				 String prdEndDate = getDate(month,Integer.parseInt(payrollMonth.split(" ")[1]));
+				 Date prdEndDT = new SimpleDateFormat("yyyy-MM-dd").parse(prdEndDate); 
+				 //if(serviceDt.before(startDt));
+				 if(empPeriods[3].equals("IN"))
+				 {
+					 managerialRemunerationInfo.setTransferIn(1);
+				 }
+				 else
+				 {
+					 managerialRemunerationInfo.setTransferIn(0);
+				 }
+				 if(empPeriods[4].equals("OUT"))
+				 {
+					 managerialRemunerationInfo.setTransferOut(1);
+				 }
+				 else
+				 {
+					 managerialRemunerationInfo.setTransferOut(0);
+				 }
+				  
+				 
+				 if( (emptDtls[5]!=null))
+				 {
+					 Date sepDate = new SimpleDateFormat("yyyy-MM-dd").parse(emptDtls[5]);
+					 if(sepDate.before(prdEndDT))
+					 {
+						 managerialRemunerationInfo.setSTATUS("Alumni");	 
+					 }
+					 else
+					 {
+						 managerialRemunerationInfo.setSTATUS("Active");	 
+					 }
+				 
+				 }
+				 else 
+				 {
+				     managerialRemunerationInfo.setSTATUS("Active");	
+				 }
+				 
+				 
+				 
+				 
+				 
+				 
+				 //int[] prdworked =  getDateDiff(endDt,startDt); 
+				  Date yearStartDt = new SimpleDateFormat("yyyy-MM-dd").parse(finYear+"-04-01"); 
+				  Date yearEndDate = new SimpleDateFormat("yyyy-MM-dd").parse((finYear+1)+"-03-31");
+				 Double days = (double) Application.getNoOfdays(new java.sql.Timestamp(endDt.getTime()),new java.sql.Timestamp(startDt.getTime()));
+				 Double daysInYear = (double) Application.getNoOfdays(new java.sql.Timestamp(yearEndDate.getTime()),new java.sql.Timestamp(yearStartDt.getTime())); 
+				 Double prdWorked = (days / daysInYear) * 12; 
+				 DecimalFormat f = new DecimalFormat("##.00");
+				 prdWorked =  Double.parseDouble(f.format(prdWorked));
+				 
+				 managerialRemunerationInfo.setNoOfMonthsWorkedInPRD(prdWorked);
+				 
+				 }
+				 
+				 managerialRemunerationInfoList.add(managerialRemunerationInfo);
+				
+			}
+			
+			 
+		}
+		catch(Exception e)
+		{
+			e.printStackTrace();
+		}
+		finally
+		{
+			if(con!=null)
+			{
+				con.close();
+				con = null;
+			}
+			if(ps!=null)
+			{
+				ps.close();
+				ps = null;
+			}
+			if(rs!=null)
+			{
+				rs.close();
+				rs = null;
+			}
+		}
+		
+		
+		
+		
+		
+		 
+		
+		
+		return managerialRemunerationInfoList; 
+		
+	}
+	
+}
